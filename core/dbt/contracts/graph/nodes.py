@@ -1,5 +1,6 @@
 import hashlib
 import os
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -405,6 +406,18 @@ class CompiledNode(CompiledResource, ParsedNode):
     """Contains attributes necessary for SQL files and nodes with refs, sources, etc,
     so all ManifestNodes except SeedNode."""
 
+    def __post_init__(self):
+        self._lock = threading.Lock()
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state.pop("_lock", None)
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self._lock = threading.Lock()
+
     @property
     def empty(self):
         return not self.raw_code.strip()
@@ -804,7 +817,8 @@ class ModelNode(ModelResource, CompiledNode):
                 for old_constraint in old_value.constraints:
                     if (
                         old_constraint not in self.columns[old_key].constraints
-                        and constraint_support[old_constraint.type] == ConstraintSupport.ENFORCED
+                        and constraint_support.get(old_constraint.type)
+                        == ConstraintSupport.ENFORCED
                     ):
                         enforced_column_constraint_removed.append(
                             {
@@ -819,7 +833,7 @@ class ModelNode(ModelResource, CompiledNode):
             for old_constraint in old.constraints:
                 if (
                     old_constraint not in self.constraints
-                    and constraint_support[old_constraint.type] == ConstraintSupport.ENFORCED
+                    and constraint_support.get(old_constraint.type) == ConstraintSupport.ENFORCED
                 ):
                     enforced_model_constraint_removed.append(
                         {
@@ -1175,6 +1189,25 @@ class SnapshotNode(SnapshotResource, CompiledNode):
     @classmethod
     def resource_class(cls) -> Type[SnapshotResource]:
         return SnapshotResource
+
+    def get_target_write_path(
+        self, target_path: str, subdirectory: str, split_suffix: Optional[str] = None
+    ):
+        # Always use many-to-one path for snapshots. Multiple snapshot blocks
+        # can share a single file, and the basename heuristic in the base class
+        # fails when one snapshot's name matches the source filename — producing
+        # both a file and a directory at the same path (EISDIR).
+        path = os.path.join(self.original_file_path, self.path)
+
+        if split_suffix:
+            pathlib_path = Path(path)
+            path = str(
+                pathlib_path.parent
+                / pathlib_path.stem
+                / (pathlib_path.stem + f"_{split_suffix}" + pathlib_path.suffix)
+            )
+
+        return os.path.join(target_path, subdirectory, self.package_name, path)
 
 
 # ====================================
@@ -1593,9 +1626,26 @@ class Group(GroupResource, BaseNode):
 @dataclass
 class FunctionNode(CompiledNode, FunctionResource):
 
+    @property
+    def is_relational(self):
+        return True
+
     @classmethod
     def resource_class(cls) -> Type[FunctionResource]:
         return FunctionResource
+
+    def same_arguments(self, old: "FunctionNode") -> bool:
+        return self.arguments == old.arguments
+
+    def same_returns(self, old: "FunctionNode") -> bool:
+        return self.returns == old.returns
+
+    def same_contents(self, old, adapter_type) -> bool:
+        return (
+            super().same_contents(old, adapter_type)
+            and self.same_arguments(old)
+            and self.same_returns(old)
+        )
 
 
 # ====================================

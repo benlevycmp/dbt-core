@@ -299,7 +299,9 @@ class TestMetricOnModelParsingWorks:
         assert simple_metric.type_params.metric_aggregation_params.agg == AggregationType.COUNT
         assert simple_metric.type_params.metric_aggregation_params.semantic_model == "fct_revenue"
         assert "semantic_model.test.fct_revenue" in simple_metric.depends_on.nodes
-        assert simple_metric.type_params.metric_aggregation_params.agg_time_dimension is None
+        assert (
+            simple_metric.type_params.metric_aggregation_params.agg_time_dimension == "second_dim"
+        )
 
         simple_metric_pydantic = semantic_manifest_metrics["simple_metric"]
         assert simple_metric_pydantic.name == "simple_metric"
@@ -314,7 +316,8 @@ class TestMetricOnModelParsingWorks:
             == "fct_revenue"
         )
         assert (
-            simple_metric_pydantic.type_params.metric_aggregation_params.agg_time_dimension is None
+            simple_metric_pydantic.type_params.metric_aggregation_params.agg_time_dimension
+            == "second_dim"
         )
         # No 'depends_on' in the pydantic metric
 
@@ -370,7 +373,10 @@ class TestMetricOnModelParsingWorks:
             is False
         )
         assert "semantic_model.test.fct_revenue" in percentile_metric.depends_on.nodes
-        assert percentile_metric.type_params.metric_aggregation_params.agg_time_dimension is None
+        assert (
+            percentile_metric.type_params.metric_aggregation_params.agg_time_dimension
+            == "second_dim"
+        )
 
         percentile_metric_pydantic = semantic_manifest_metrics["percentile_metric"]
         assert percentile_metric_pydantic.name == "percentile_metric"
@@ -398,7 +404,7 @@ class TestMetricOnModelParsingWorks:
         )
         assert (
             percentile_metric_pydantic.type_params.metric_aggregation_params.agg_time_dimension
-            is None
+            == "second_dim"
         )
 
         cumulative_metric = metrics["metric.test.cumulative_metric"]
@@ -985,4 +991,74 @@ class TestMetricOnModelWithoutCustomSemanticModelName:
 
 
 # TODO DI-4605: add enforcement and a test for when there are validity params with no column granularity
+
+
+class TestV2SemanticModelPartialParsingChanged:
+    """
+    Regression test for DI-3697: partial parsing must not create duplicate v2 semantic models
+    when the model YAML entry is changed.
+    """
+
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "schema.yml": semantic_model_schema_yml_v2,
+            "fct_revenue.sql": fct_revenue_sql,
+            "metricflow_time_spine.sql": metricflow_time_spine_sql,
+        }
+
+    def test_v2_semantic_model_partial_parsing_changed(self, project):
+        from dbt.tests.util import write_file
+
+        runner = dbtTestRunner()
+        result = runner.invoke(["parse"])
+        assert result.success
+        assert isinstance(result.result, Manifest)
+        assert len(result.result.semantic_models) == 1
+
+        # Modify a column dimension label — triggers partial parsing of the model entry
+        modified = semantic_model_schema_yml_v2.replace(
+            'label: "ID Dimension"', 'label: "Updated ID Dimension"'
+        )
+        write_file(modified, project.project_root, "models", "schema.yml")
+
+        result = runner.invoke(["parse"])
+        assert result.success, result.exception
+        # Before the fix this would be 2 (duplicate), not 1
+        assert len(result.result.semantic_models) == 1
+
+
+class TestV2SemanticModelPartialParsingDisabled:
+    """
+    Regression test for DI-3697: partial parsing must clean up a v2 semantic model
+    when semantic_model is changed from true to false on the model entry.
+    """
+
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "schema.yml": semantic_model_schema_yml_v2,
+            "fct_revenue.sql": fct_revenue_sql,
+            "metricflow_time_spine.sql": metricflow_time_spine_sql,
+        }
+
+    def test_v2_semantic_model_partial_parsing_disabled(self, project):
+        from dbt.tests.util import write_file
+
+        runner = dbtTestRunner()
+        result = runner.invoke(["parse"])
+        assert result.success
+        assert len(result.result.semantic_models) == 1
+
+        # Disable the v2 semantic model
+        disabled = semantic_model_schema_yml_v2.replace(
+            "semantic_model: true", "semantic_model: false"
+        )
+        write_file(disabled, project.project_root, "models", "schema.yml")
+
+        result = runner.invoke(["parse"])
+        assert result.success, result.exception
+        assert len(result.result.semantic_models) == 0
+
+
 # TODO DI-4603: add enforcement and a test for a TIME type dimension and a column that has no granularity set

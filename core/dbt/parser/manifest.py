@@ -9,8 +9,9 @@ from datetime import date, datetime, timezone
 from itertools import chain
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Type, Union
 
+import jinja2
 import msgpack
-from jinja2.nodes import Call
+from jinja2.nodes import Call, Const
 
 import dbt.deprecations
 import dbt.exceptions
@@ -152,6 +153,8 @@ def extended_msgpack_encoder(obj):
     elif type(obj) is datetime:
         datetime_bytes = msgpack.ExtType(2, obj.isoformat().encode())
         return datetime_bytes
+    elif isinstance(obj, jinja2.Undefined):
+        return None
 
     return obj
 
@@ -1248,7 +1251,7 @@ class ManifestLoader:
     def update_semantic_model(self, semantic_model) -> None:
         # This has to be done at the end of parsing because the referenced model
         # might have alias/schema/database fields that are updated by yaml config.
-        if semantic_model.depends_on_nodes[0]:
+        if semantic_model.depends_on_nodes:
             refd_node = self.manifest.nodes[semantic_model.depends_on_nodes[0]]
             semantic_model.node_relation = NodeRelation(
                 relation_name=refd_node.relation_name,
@@ -1772,7 +1775,15 @@ def _get_doc_blocks(description: str, manifest: Manifest, node_package: str) -> 
                 and hasattr(node.node, "name")
                 and node.node.name == "doc"
             ):
-                doc_args = [arg.value for arg in node.args]
+                # Only Const is statically resolvable to a block name at parse time.
+                #    * It does have a "value" attribute but mypy is unconvinced so the hasattr is to make it extra happy.
+                # Filter out Const values to avoid raising an unhandled exception attempting
+                # to statically parseother jinja expression nodes (ie Concat, CondExpr)
+                doc_args = [
+                    arg.value
+                    for arg in node.args
+                    if isinstance(arg, Const) and hasattr(arg, "value")
+                ]
 
                 if len(doc_args) == 1:
                     package, name = None, doc_args[0]

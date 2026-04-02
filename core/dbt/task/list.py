@@ -1,6 +1,7 @@
 import json
-from typing import Iterator, List
+from typing import Iterator, List, Optional
 
+from dbt.artifacts.resources import Catalog
 from dbt.cli.flags import Flags
 from dbt.config.runtime import RuntimeConfig
 from dbt.contracts.graph.manifest import Manifest
@@ -56,8 +57,14 @@ class ListTask(GraphRunnableTask):
         )
     )
 
-    def __init__(self, args: Flags, config: RuntimeConfig, manifest: Manifest) -> None:
-        super().__init__(args, config, manifest)
+    def __init__(
+        self,
+        args: Flags,
+        config: RuntimeConfig,
+        manifest: Manifest,
+        catalogs: Optional[List[Catalog]] = None,
+    ) -> None:
+        super().__init__(args, config, manifest, catalogs=catalogs)
         if self.args.models:
             if self.args.select:
                 raise DbtRuntimeError('"models" and "select" are mutually exclusive arguments')
@@ -229,6 +236,7 @@ class ListTask(GraphRunnableTask):
             previous_state=self.previous_state,
             resource_types=self.resource_types,
             include_empty_nodes=True,
+            selectors=self.config.selectors,
         )
 
     def interpret_results(self, results):
